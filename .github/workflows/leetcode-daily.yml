@@ -1,0 +1,26 @@
+name: Daily LeetCode Picks
+
+on:
+  schedule:
+    # 09:00 Asia/Ho_Chi_Minh (UTC+7) = 02:00 UTC
+    - cron: "0 2 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  leetcode:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run LeetCode picker
+        env:
+          LEETCODE_DISCORD_WEBHOOK_URL: ${{ secrets.LEETCODE_DISCORD_WEBHOOK_URL }}
+          LEETCODE_DISCORD_THREAD_ID: ${{ secrets.LEETCODE_DISCORD_THREAD_ID }}
+        run: python scripts/leetcode_daily.py

@@ -1,0 +1,27 @@
+name: Daily Vocabulary
+
+on:
+  schedule:
+    # 09:00 Asia/Ho_Chi_Minh (UTC+7) = 02:00 UTC
+    - cron: "0 2 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  vocab:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run vocab generator
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          VOCAB_DISCORD_WEBHOOK_URL: ${{ secrets.VOCAB_DISCORD_WEBHOOK_URL }}
+          VOCAB_DISCORD_THREAD_ID: ${{ secrets.VOCAB_DISCORD_THREAD_ID }}
+        run: python scripts/vocab_daily.py
