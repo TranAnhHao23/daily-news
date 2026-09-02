@@ -1,8 +1,8 @@
 # Daily News Digest
 
 Tự động tổng hợp tin tức (Việt Nam / Thế giới / Công nghệ & AI) từ RSS, tóm tắt
-bằng Claude, và gửi vào Discord (qua webhook) mỗi ngày lúc **9:00 sáng
-(giờ Việt Nam)**.
+bằng Google Gemini (miễn phí), và gửi vào Discord (qua webhook) mỗi ngày lúc
+**9:00 sáng (giờ Việt Nam)**.
 
 Chạy hoàn toàn bằng **GitHub Actions** — không cần server riêng.
 
@@ -12,12 +12,12 @@ Chạy hoàn toàn bằng **GitHub Actions** — không cần server riêng.
    `0 2 * * *` (UTC) = 9:00 sáng giờ Việt Nam (UTC+7).
 2. Script lấy tin từ các nguồn RSS trong khoảng **00:00 hôm qua → 9:00 sáng
    hôm nay**.
-3. Gửi toàn bộ tin thô cho Claude để tóm tắt súc tích theo từng chủ đề.
+3. Gửi toàn bộ tin thô cho Gemini để tóm tắt súc tích theo từng chủ đề.
 4. Đăng bản tin vào kênh Discord của bạn qua webhook.
 
 Nguồn tin mặc định (chỉnh trong `scripts/fetch_and_summarize.py`, biến `FEEDS`):
 
-- **Tin tức Việt Nam**: VnExpress, Tuổi Trẻ
+- **Tin tức Việt Nam**: VnExpress, Tuổi Trẻ, Dân Trí, CafeBiz
 - **Tin thế giới**: VnExpress Thế giới, BBC World
 - **Công nghệ & AI**: VnExpress Số hóa, TechCrunch
 
@@ -45,24 +45,29 @@ git branch -M main
 git push -u origin main
 ```
 
-### 2. Thêm GitHub Secrets
+### 2. Lấy Gemini API key (miễn phí)
+
+Vào https://aistudio.google.com/apikey, đăng nhập bằng tài khoản Google, bấm
+**Create API key**. Free tier hiện tại đủ dùng thoải mái cho 1 lần chạy/ngày.
+
+### 3. Thêm GitHub Secrets
 
 Vào repo trên GitHub → **Settings → Secrets and variables → Actions → New
 repository secret**, thêm 2 secret:
 
 | Name | Giá trị |
 |---|---|
-| `ANTHROPIC_API_KEY` | API key lấy tại https://console.anthropic.com |
+| `GEMINI_API_KEY` | API key lấy ở bước 2 |
 | `DISCORD_WEBHOOK_URL` | Webhook URL của kênh Discord bạn muốn nhận tin |
 
 **Không** commit 2 giá trị này vào code — luôn để trong GitHub Secrets.
 
-### 3. Test thử
+### 4. Test thử
 
 Vào tab **Actions** trên GitHub → chọn workflow **Daily News Digest** →
 **Run workflow** để chạy thử ngay, không cần chờ đến 9h sáng.
 
-### 4. Chạy tự động
+### 5. Chạy tự động
 
 Workflow đã cấu hình sẵn cron `0 2 * * *` (UTC) = 9:00 sáng giờ Việt Nam,
 chạy mỗi ngày mà không cần làm gì thêm.
@@ -74,7 +79,7 @@ chạy mỗi ngày mà không cần làm gì thêm.
 
 ```bash
 pip install -r requirements.txt
-export ANTHROPIC_API_KEY="sk-ant-..."
+export GEMINI_API_KEY="AIza..."
 export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
 python scripts/fetch_and_summarize.py
 ```

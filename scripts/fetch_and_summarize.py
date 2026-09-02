@@ -11,14 +11,27 @@ from zoneinfo import ZoneInfo
 
 import feedparser
 import requests
-from anthropic import Anthropic
+from dateutil import parser as dateutil_parser
 
 TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+
+GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_URL = (
+    f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+)
+
+# Some sites (e.g. CafeBiz) block requests without a browser-like User-Agent.
+feedparser.USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
 
 FEEDS = {
     "Tin tức Việt Nam": [
         ("VnExpress", "https://vnexpress.net/rss/tin-moi-nhat.rss"),
         ("Tuổi Trẻ", "https://tuoitre.vn/rss/tin-moi-nhat.rss"),
+        ("Dân Trí", "https://dantri.com.vn/rss/home.rss"),
+        ("CafeBiz", "https://cafebiz.vn/rss/home.rss"),
     ],
     "Tin thế giới": [
         ("VnExpress Thế giới", "https://vnexpress.net/rss/the-gioi.rss"),
@@ -30,7 +43,8 @@ FEEDS = {
     ],
 }
 
-MAX_ARTICLES_PER_CATEGORY = 12
+MAX_ARTICLES_PER_SOURCE = 10
+MAX_ARTICLES_PER_CATEGORY = 30
 DISCORD_CHUNK_LIMIT = 1900
 
 
@@ -47,6 +61,21 @@ def parse_entry_time(entry):
         val = entry.get(key)
         if val:
             return datetime.fromtimestamp(time.mktime(val), tz=ZoneInfo("UTC")).astimezone(TZ)
+
+    # Some feeds (Tuổi Trẻ, CafeBiz) use non-standard date strings that
+    # feedparser can't parse into published_parsed. Fall back to dateutil.
+    for key in ("published", "updated"):
+        raw = entry.get(key)
+        if not raw:
+            continue
+        try:
+            dt = dateutil_parser.parse(raw)
+        except (ValueError, OverflowError):
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=TZ)
+        return dt.astimezone(TZ)
+
     return None
 
 
@@ -62,6 +91,7 @@ def fetch_articles(window_start, window_end):
                 print(f"[warn] failed to fetch {source_name}: {exc}", file=sys.stderr)
                 continue
 
+            source_articles = []
             for entry in feed.entries:
                 link = entry.get("link")
                 if not link or link in seen_links:
@@ -72,7 +102,7 @@ def fetch_articles(window_start, window_end):
                     continue
 
                 seen_links.add(link)
-                articles[category].append(
+                source_articles.append(
                     {
                         "title": entry.get("title", "").strip(),
                         "link": link,
@@ -81,6 +111,10 @@ def fetch_articles(window_start, window_end):
                         "published": published,
                     }
                 )
+
+            source_articles.sort(key=lambda a: a["published"], reverse=True)
+            # Cap per source so one prolific outlet can't crowd out the others.
+            articles[category].extend(source_articles[:MAX_ARTICLES_PER_SOURCE])
 
     for category in articles:
         articles[category].sort(key=lambda a: a["published"], reverse=True)
@@ -119,14 +153,25 @@ def build_prompt(articles, window_start, window_end):
     return "\n".join(lines)
 
 
-def summarize_with_claude(prompt):
-    client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    response = client.messages.create(
-        model="claude-sonnet-5",
-        max_tokens=2000,
-        messages=[{"role": "user", "content": prompt}],
+def summarize_with_gemini(prompt):
+    api_key = os.environ["GEMINI_API_KEY"]
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"maxOutputTokens": 2000},
+    }
+    resp = requests.post(
+        GEMINI_URL,
+        params={"key": api_key},
+        json=payload,
+        timeout=60,
     )
-    return "".join(block.text for block in response.content if block.type == "text").strip()
+    resp.raise_for_status()
+    data = resp.json()
+    candidates = data.get("candidates") or []
+    if not candidates:
+        raise RuntimeError(f"Gemini returned no candidates: {data}")
+    parts = candidates[0].get("content", {}).get("parts", [])
+    return "".join(p.get("text", "") for p in parts).strip()
 
 
 def chunk_message(text, limit=DISCORD_CHUNK_LIMIT):
@@ -159,7 +204,7 @@ def main():
     print(f"Fetched {total} articles between {window_start} and {window_end}")
 
     prompt = build_prompt(articles, window_start, window_end)
-    digest_text = summarize_with_claude(prompt)
+    digest_text = summarize_with_gemini(prompt)
 
     header = f"🗞️ **Bản tin sáng {window_end.strftime('%d/%m/%Y')}**"
     post_to_discord(header, digest_text)
