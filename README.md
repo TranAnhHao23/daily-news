@@ -1,8 +1,12 @@
 # Daily News Digest
 
-Tự động tổng hợp tin tức (Việt Nam / Thế giới / Công nghệ & AI) từ RSS, tóm tắt
-bằng Google Gemini (miễn phí), và gửi vào Discord (qua webhook) mỗi ngày lúc
-**9:00 sáng (giờ Việt Nam)**.
+Tự động lấy tin tức (Việt Nam / Thế giới / Công nghệ & AI) từ RSS và gửi vào
+Discord dưới dạng **card** (ảnh thumbnail + tiêu đề + mô tả ngắn + link gốc)
+mỗi ngày lúc **9:00 sáng (giờ Việt Nam)**.
+
+Không dùng AI để tóm tắt — tiêu đề/mô tả lấy thẳng từ RSS, nên không có rủi ro
+bị cắt cụt hay bịa nội dung, và cũng không cần đăng ký thêm API key nào ngoài
+Discord.
 
 Chạy hoàn toàn bằng **GitHub Actions** — không cần server riêng.
 
@@ -12,8 +16,11 @@ Chạy hoàn toàn bằng **GitHub Actions** — không cần server riêng.
    `0 2 * * *` (UTC) = 9:00 sáng giờ Việt Nam (UTC+7).
 2. Script lấy tin từ các nguồn RSS trong khoảng **00:00 hôm qua → 9:00 sáng
    hôm nay**.
-3. Gửi toàn bộ tin thô cho Gemini để tóm tắt súc tích theo từng chủ đề.
-4. Đăng bản tin vào kênh Discord của bạn qua webhook.
+3. Mỗi chủ đề chọn tối đa 10 tin (chia đều theo từng nguồn để không báo nào
+   lấn át báo khác), dựng thành card (Discord embed).
+4. Đăng lần lượt từng chủ đề vào kênh Discord của bạn qua webhook — mỗi tin
+   là 1 card riêng biệt, có ảnh, tiêu đề bấm được, mô tả ngắn, tên nguồn +
+   giờ đăng.
 
 Nguồn tin mặc định (chỉnh trong `scripts/fetch_and_summarize.py`, biến `FEEDS`):
 
@@ -45,29 +52,32 @@ git branch -M main
 git push -u origin main
 ```
 
-### 2. Lấy Gemini API key (miễn phí)
-
-Vào https://aistudio.google.com/apikey, đăng nhập bằng tài khoản Google, bấm
-**Create API key**. Free tier hiện tại đủ dùng thoải mái cho 1 lần chạy/ngày.
-
-### 3. Thêm GitHub Secrets
+### 2. Thêm GitHub Secret
 
 Vào repo trên GitHub → **Settings → Secrets and variables → Actions → New
-repository secret**, thêm 2 secret:
+repository secret**, thêm:
 
 | Name | Giá trị |
 |---|---|
-| `GEMINI_API_KEY` | API key lấy ở bước 2 |
 | `DISCORD_WEBHOOK_URL` | Webhook URL của kênh Discord bạn muốn nhận tin |
 
-**Không** commit 2 giá trị này vào code — luôn để trong GitHub Secrets.
+**Không** commit giá trị này vào code — luôn để trong GitHub Secrets.
 
-### 4. Test thử
+#### (Tùy chọn) Gửi vào 1 thread cố định thay vì gửi thẳng ra channel
+
+1. Trong Discord, bật **Developer Mode**: User Settings → Advanced → Developer Mode.
+2. Tạo 1 thread trong channel đó (hoặc dùng thread có sẵn).
+3. Chuột phải vào thread → **Copy Thread ID**.
+4. Thêm secret `DISCORD_THREAD_ID` với giá trị là ID vừa copy.
+
+Nếu không thêm secret này, bot sẽ gửi thẳng vào channel như bình thường.
+
+### 3. Test thử
 
 Vào tab **Actions** trên GitHub → chọn workflow **Daily News Digest** →
 **Run workflow** để chạy thử ngay, không cần chờ đến 9h sáng.
 
-### 5. Chạy tự động
+### 4. Chạy tự động
 
 Workflow đã cấu hình sẵn cron `0 2 * * *` (UTC) = 9:00 sáng giờ Việt Nam,
 chạy mỗi ngày mà không cần làm gì thêm.
@@ -79,7 +89,6 @@ chạy mỗi ngày mà không cần làm gì thêm.
 
 ```bash
 pip install -r requirements.txt
-export GEMINI_API_KEY="AIza..."
 export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
 python scripts/fetch_and_summarize.py
 ```
@@ -87,6 +96,9 @@ python scripts/fetch_and_summarize.py
 ## Tùy chỉnh
 
 - Đổi/thêm nguồn RSS: sửa dict `FEEDS` trong `scripts/fetch_and_summarize.py`.
-- Đổi số lượng tin mỗi chủ đề: sửa `MAX_ARTICLES_PER_CATEGORY`.
+- Đổi số card tối đa mỗi chủ đề: sửa `MAX_CARDS_PER_CATEGORY` (Discord giới
+  hạn tối đa 10 embed/tin nhắn, tăng quá 10 sẽ tự động chia thành nhiều tin
+  nhắn liên tiếp trong cùng chủ đề).
+- Đổi màu card theo từng chủ đề: sửa dict `CATEGORY_COLORS`.
 - Đổi giờ chạy: sửa dòng `cron` trong
   `.github/workflows/daily-digest.yml` (nhớ tính theo giờ UTC).

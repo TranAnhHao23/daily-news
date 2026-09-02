@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Fetch news from RSS feeds, summarize with Claude, and post to Discord.
+"""Fetch news from RSS feeds and post them as Discord embed "cards".
+
+No AI/summarization involved — headlines, links, and thumbnails come
+straight from each RSS feed, so there is nothing to truncate or hallucinate.
 
 Time window: yesterday 00:00 to today 09:00, Asia/Ho_Chi_Minh time.
 """
+import html
 import os
 import re
 import sys
@@ -15,8 +19,6 @@ import requests
 from dateutil import parser as dateutil_parser
 
 TZ = ZoneInfo("Asia/Ho_Chi_Minh")
-
-GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
 # Some sites (e.g. CafeBiz) block requests without a browser-like User-Agent.
 feedparser.USER_AGENT = (
@@ -41,9 +43,21 @@ FEEDS = {
     ],
 }
 
-MAX_ARTICLES_PER_SOURCE = 10
-MAX_ARTICLES_PER_CATEGORY = 30
-DISCORD_CHUNK_LIMIT = 1900
+CATEGORY_COLORS = {
+    "Tin tức Việt Nam": 0xDA251D,
+    "Tin thế giới": 0x2E86DE,
+    "Công nghệ & AI": 0x8E44AD,
+}
+CATEGORY_EMOJI = {
+    "Tin tức Việt Nam": "🇻🇳",
+    "Tin thế giới": "🌍",
+    "Công nghệ & AI": "💻",
+}
+DEFAULT_COLOR = 0x95A5A6
+
+MAX_ARTICLES_PER_SOURCE = 10  # raw candidate pool per source, before card selection
+MAX_CARDS_PER_CATEGORY = 10  # how many cards to actually post per category
+DISCORD_EMBEDS_PER_MESSAGE = 10  # Discord API hard limit
 
 
 def get_window():
@@ -77,6 +91,38 @@ def parse_entry_time(entry):
     return None
 
 
+def clean_description(raw_html, max_len=200):
+    if not raw_html:
+        return ""
+    text = re.sub(r"<[^>]+>", " ", raw_html)
+    text = html.unescape(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > max_len:
+        text = text[:max_len].rsplit(" ", 1)[0] + "…"
+    return text
+
+
+def extract_image(entry):
+    for thumb in entry.get("media_thumbnail", []) or []:
+        if thumb.get("url"):
+            return thumb["url"]
+
+    for media in entry.get("media_content", []) or []:
+        if media.get("url") and media.get("medium", "image") == "image":
+            return media["url"]
+
+    for enc in entry.get("enclosures", []) or []:
+        if enc.get("type", "").startswith("image") and enc.get("href"):
+            return enc["href"]
+
+    raw = entry.get("summary", "") or ""
+    match = re.search(r'<img[^>]+src="([^"]+)"', raw)
+    if match:
+        return match.group(1)
+
+    return None
+
+
 def fetch_articles(window_start, window_end):
     articles = {cat: [] for cat in FEEDS}
     seen_links = set()
@@ -104,7 +150,8 @@ def fetch_articles(window_start, window_end):
                     {
                         "title": entry.get("title", "").strip(),
                         "link": link,
-                        "summary": entry.get("summary", "").strip(),
+                        "description": clean_description(entry.get("summary", "")),
+                        "image": extract_image(entry),
                         "source": source_name,
                         "published": published,
                     }
@@ -114,123 +161,69 @@ def fetch_articles(window_start, window_end):
             # Cap per source so one prolific outlet can't crowd out the others.
             articles[category].extend(source_articles[:MAX_ARTICLES_PER_SOURCE])
 
-    for category in articles:
-        articles[category].sort(key=lambda a: a["published"], reverse=True)
-        articles[category] = articles[category][:MAX_ARTICLES_PER_CATEGORY]
-
     return articles
 
 
-def build_prompt(articles, window_start, window_end):
-    lines = [
-        "Bạn là biên tập viên tin tức. Dưới đây là danh sách bài báo thô theo từng chủ đề, "
-        "trong khoảng thời gian từ "
-        f"{window_start.strftime('%H:%M %d/%m/%Y')} đến {window_end.strftime('%H:%M %d/%m/%Y')}.",
-        "",
-        "Hãy viết một bản tin vắn tắt bằng tiếng Việt, định dạng Markdown phù hợp để gửi qua Discord, với yêu cầu:",
-        "- Mỗi chủ đề là một mục có tiêu đề in đậm kèm emoji phù hợp.",
-        "- Trong mỗi chủ đề, chọn lọc các tin quan trọng/đáng chú ý nhất (khoảng 4-6 tin), "
-        "mỗi tin là 1 bullet gồm: tóm tắt 1 câu súc tích bằng tiếng Việt + link nguồn dạng markdown.",
-        "- Bỏ qua tin trùng lặp nội dung, tin rác, quảng cáo.",
-        "- Nếu một chủ đề không có tin nào, ghi 'Không có tin đáng chú ý.'",
-        "- Không bịa thêm thông tin ngoài nội dung được cung cấp.",
-        "- Không thêm lời mở đầu/kết luận thừa, chỉ xuất thẳng nội dung bản tin.",
-        "",
-    ]
+def select_cards(items, limit):
+    """Round-robin across sources so every outlet gets fair representation."""
+    by_source = {}
+    for article in items:
+        by_source.setdefault(article["source"], []).append(article)
+    for bucket in by_source.values():
+        bucket.sort(key=lambda a: a["published"], reverse=True)
 
-    for category, items in articles.items():
-        lines.append(f"## {category}")
-        if not items:
-            lines.append("(không có bài viết nào trong khoảng thời gian này)")
-        for item in items:
-            lines.append(f"- [{item['source']}] {item['title']} | {item['link']}")
-            if item["summary"]:
-                lines.append(f"  Mô tả gốc: {item['summary'][:300]}")
-        lines.append("")
-
-    return "\n".join(lines)
+    sources = list(by_source.keys())
+    selected = []
+    idx = 0
+    while len(selected) < limit and any(by_source.values()):
+        source = sources[idx % len(sources)]
+        bucket = by_source[source]
+        if bucket:
+            selected.append(bucket.pop(0))
+        idx += 1
+    return selected
 
 
-def _version_key(model_name):
-    return tuple(int(n) for n in re.findall(r"\d+", model_name))
-
-
-def resolve_gemini_model(api_key):
-    """Pick a usable flash model for this API key.
-
-    Model names/aliases get renamed and retired over time, so instead of
-    hardcoding one, ask the API which models this key can actually use.
-    """
-    resp = requests.get(f"{GEMINI_API_BASE}/models", params={"key": api_key}, timeout=30)
-    if resp.status_code >= 300:
-        raise RuntimeError(f"Gemini ListModels error {resp.status_code}: {resp.text}")
-
-    models = resp.json().get("models", [])
-    candidates = [
-        m["name"]
-        for m in models
-        if "generateContent" in m.get("supportedGenerationMethods", [])
-        and "flash" in m["name"].lower()
-    ]
-    if not candidates:
-        raise RuntimeError("No Gemini flash model with generateContent support found for this API key.")
-
-    # Prefer plain flash models over "-8b" / "-lite" lightweight variants.
-    preferred = [c for c in candidates if "8b" not in c.lower() and "lite" not in c.lower()]
-    pool = preferred or candidates
-
-    latest_aliases = [c for c in pool if c.lower().endswith("flash-latest")]
-    if latest_aliases:
-        return sorted(latest_aliases)[-1]
-
-    return max(pool, key=_version_key)
-
-
-def summarize_with_gemini(prompt):
-    api_key = os.environ["GEMINI_API_KEY"]
-    model_name = resolve_gemini_model(api_key)
-    print(f"Using Gemini model: {model_name}")
-
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"maxOutputTokens": 2000},
+def build_embed(article, color):
+    embed = {
+        "title": article["title"][:256],
+        "url": article["link"],
+        "color": color,
+        "footer": {"text": f"{article['source']} • {article['published'].strftime('%H:%M %d/%m')}"},
     }
-    resp = requests.post(
-        f"{GEMINI_API_BASE}/{model_name}:generateContent",
-        params={"key": api_key},
-        json=payload,
-        timeout=60,
-    )
+    if article["description"]:
+        embed["description"] = article["description"]
+    if article["image"]:
+        embed["thumbnail"] = {"url": article["image"]}
+    return embed
+
+
+def post_message(webhook_url, payload, thread_id=None):
+    params = {"thread_id": thread_id} if thread_id else None
+    resp = requests.post(webhook_url, params=params, json=payload, timeout=30)
     if resp.status_code >= 300:
-        raise RuntimeError(f"Gemini API error {resp.status_code}: {resp.text}")
-    data = resp.json()
-    candidates = data.get("candidates") or []
-    if not candidates:
-        raise RuntimeError(f"Gemini returned no candidates: {data}")
-    parts = candidates[0].get("content", {}).get("parts", [])
-    return "".join(p.get("text", "") for p in parts).strip()
+        raise RuntimeError(f"Discord webhook failed: {resp.status_code} {resp.text}")
+    time.sleep(0.5)  # stay well under Discord's webhook rate limit
 
 
-def chunk_message(text, limit=DISCORD_CHUNK_LIMIT):
-    chunks = []
-    while len(text) > limit:
-        split_at = text.rfind("\n", 0, limit)
-        if split_at == -1:
-            split_at = limit
-        chunks.append(text[:split_at])
-        text = text[split_at:]
-    if text:
-        chunks.append(text)
-    return chunks
+def post_category(webhook_url, category, items, color, thread_id=None):
+    header = f"{CATEGORY_EMOJI.get(category, '')} **{category}**".strip()
 
+    if not items:
+        post_message(
+            webhook_url,
+            {"content": f"{header}\nKhông có tin nào trong khung giờ này."},
+            thread_id=thread_id,
+        )
+        return
 
-def post_to_discord(header, digest_text):
-    webhook_url = os.environ["DISCORD_WEBHOOK_URL"]
-    full_text = f"{header}\n\n{digest_text}"
-    for chunk in chunk_message(full_text):
-        resp = requests.post(webhook_url, json={"content": chunk})
-        if resp.status_code >= 300:
-            raise RuntimeError(f"Discord webhook failed: {resp.status_code} {resp.text}")
+    embeds = [build_embed(a, color) for a in items]
+    for i in range(0, len(embeds), DISCORD_EMBEDS_PER_MESSAGE):
+        batch = embeds[i : i + DISCORD_EMBEDS_PER_MESSAGE]
+        payload = {"embeds": batch}
+        if i == 0:
+            payload["content"] = header
+        post_message(webhook_url, payload, thread_id=thread_id)
 
 
 def main():
@@ -240,11 +233,23 @@ def main():
     total = sum(len(v) for v in articles.values())
     print(f"Fetched {total} articles between {window_start} and {window_end}")
 
-    prompt = build_prompt(articles, window_start, window_end)
-    digest_text = summarize_with_gemini(prompt)
+    webhook_url = os.environ["DISCORD_WEBHOOK_URL"]
+    # Optional: post into a specific existing thread instead of the channel
+    # itself. Get the thread ID from Discord (right-click thread > Copy
+    # Thread ID, Developer Mode must be enabled) and set it as this env var.
+    thread_id = os.environ.get("DISCORD_THREAD_ID") or None
 
-    header = f"🗞️ **Bản tin sáng {window_end.strftime('%d/%m/%Y')}**"
-    post_to_discord(header, digest_text)
+    post_message(
+        webhook_url,
+        {"content": f"🗞️ **Bản tin sáng {window_end.strftime('%d/%m/%Y')}**"},
+        thread_id=thread_id,
+    )
+
+    for category, items in articles.items():
+        color = CATEGORY_COLORS.get(category, DEFAULT_COLOR)
+        selected = select_cards(items, MAX_CARDS_PER_CATEGORY)
+        post_category(webhook_url, category, selected, color, thread_id=thread_id)
+
     print("Posted digest to Discord.")
 
 
