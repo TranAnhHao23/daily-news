@@ -4,6 +4,7 @@
 Time window: yesterday 00:00 to today 09:00, Asia/Ho_Chi_Minh time.
 """
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta
@@ -15,10 +16,7 @@ from dateutil import parser as dateutil_parser
 
 TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
-GEMINI_MODEL = "gemini-2.0-flash"
-GEMINI_URL = (
-    f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
-)
+GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
 # Some sites (e.g. CafeBiz) block requests without a browser-like User-Agent.
 feedparser.USER_AGENT = (
@@ -153,19 +151,58 @@ def build_prompt(articles, window_start, window_end):
     return "\n".join(lines)
 
 
+def _version_key(model_name):
+    return tuple(int(n) for n in re.findall(r"\d+", model_name))
+
+
+def resolve_gemini_model(api_key):
+    """Pick a usable flash model for this API key.
+
+    Model names/aliases get renamed and retired over time, so instead of
+    hardcoding one, ask the API which models this key can actually use.
+    """
+    resp = requests.get(f"{GEMINI_API_BASE}/models", params={"key": api_key}, timeout=30)
+    if resp.status_code >= 300:
+        raise RuntimeError(f"Gemini ListModels error {resp.status_code}: {resp.text}")
+
+    models = resp.json().get("models", [])
+    candidates = [
+        m["name"]
+        for m in models
+        if "generateContent" in m.get("supportedGenerationMethods", [])
+        and "flash" in m["name"].lower()
+    ]
+    if not candidates:
+        raise RuntimeError("No Gemini flash model with generateContent support found for this API key.")
+
+    # Prefer plain flash models over "-8b" / "-lite" lightweight variants.
+    preferred = [c for c in candidates if "8b" not in c.lower() and "lite" not in c.lower()]
+    pool = preferred or candidates
+
+    latest_aliases = [c for c in pool if c.lower().endswith("flash-latest")]
+    if latest_aliases:
+        return sorted(latest_aliases)[-1]
+
+    return max(pool, key=_version_key)
+
+
 def summarize_with_gemini(prompt):
     api_key = os.environ["GEMINI_API_KEY"]
+    model_name = resolve_gemini_model(api_key)
+    print(f"Using Gemini model: {model_name}")
+
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"maxOutputTokens": 2000},
     }
     resp = requests.post(
-        GEMINI_URL,
+        f"{GEMINI_API_BASE}/{model_name}:generateContent",
         params={"key": api_key},
         json=payload,
         timeout=60,
     )
-    resp.raise_for_status()
+    if resp.status_code >= 300:
+        raise RuntimeError(f"Gemini API error {resp.status_code}: {resp.text}")
     data = resp.json()
     candidates = data.get("candidates") or []
     if not candidates:
