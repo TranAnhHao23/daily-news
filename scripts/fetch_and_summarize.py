@@ -12,6 +12,7 @@ import re
 import sys
 import time
 from datetime import datetime, timedelta
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import feedparser
@@ -184,12 +185,28 @@ def select_cards(items, limit):
     return selected
 
 
+def favicon_url(link):
+    domain = urlparse(link).netloc
+    if domain.startswith("www."):
+        domain = domain[4:]
+    return f"https://www.google.com/s2/favicons?domain={domain}&sz=64"
+
+
+def build_banner_embed(category, count, color):
+    return {
+        "title": f"{CATEGORY_EMOJI.get(category, '')} {category}".strip(),
+        "description": f"{count} tin đáng chú ý" if count else "Không có tin nào trong khung giờ này.",
+        "color": color,
+    }
+
+
 def build_embed(article, color):
     embed = {
         "title": article["title"][:256],
         "url": article["link"],
         "color": color,
-        "footer": {"text": f"{article['source']} • {article['published'].strftime('%H:%M %d/%m')}"},
+        "author": {"name": article["source"], "icon_url": favicon_url(article["link"])},
+        "timestamp": article["published"].isoformat(),
     }
     if article["description"]:
         embed["description"] = article["description"]
@@ -207,23 +224,22 @@ def post_message(webhook_url, payload, thread_id=None):
 
 
 def post_category(webhook_url, category, items, color, thread_id=None):
-    header = f"{CATEGORY_EMOJI.get(category, '')} **{category}**".strip()
+    banner = build_banner_embed(category, len(items), color)
 
     if not items:
-        post_message(
-            webhook_url,
-            {"content": f"{header}\nKhông có tin nào trong khung giờ này."},
-            thread_id=thread_id,
-        )
+        post_message(webhook_url, {"embeds": [banner]}, thread_id=thread_id)
         return
 
-    embeds = [build_embed(a, color) for a in items]
-    for i in range(0, len(embeds), DISCORD_EMBEDS_PER_MESSAGE):
-        batch = embeds[i : i + DISCORD_EMBEDS_PER_MESSAGE]
-        payload = {"embeds": batch}
-        if i == 0:
-            payload["content"] = header
-        post_message(webhook_url, payload, thread_id=thread_id)
+    article_embeds = [build_embed(a, color) for a in items]
+
+    # Banner shares the first message with as many article cards as fit.
+    first_batch = [banner] + article_embeds[: DISCORD_EMBEDS_PER_MESSAGE - 1]
+    post_message(webhook_url, {"embeds": first_batch}, thread_id=thread_id)
+
+    remaining = article_embeds[DISCORD_EMBEDS_PER_MESSAGE - 1 :]
+    for i in range(0, len(remaining), DISCORD_EMBEDS_PER_MESSAGE):
+        batch = remaining[i : i + DISCORD_EMBEDS_PER_MESSAGE]
+        post_message(webhook_url, {"embeds": batch}, thread_id=thread_id)
 
 
 def main():
@@ -239,11 +255,15 @@ def main():
     # Thread ID, Developer Mode must be enabled) and set it as this env var.
     thread_id = os.environ.get("DISCORD_THREAD_ID") or None
 
-    post_message(
-        webhook_url,
-        {"content": f"🗞️ **Bản tin sáng {window_end.strftime('%d/%m/%Y')}**"},
-        thread_id=thread_id,
-    )
+    digest_header = {
+        "title": f"🗞️ Bản tin sáng {window_end.strftime('%d/%m/%Y')}",
+        "description": (
+            f"Tổng hợp tin từ {window_start.strftime('%H:%M %d/%m')} "
+            f"đến {window_end.strftime('%H:%M %d/%m')}"
+        ),
+        "color": 0x2C3E50,
+    }
+    post_message(webhook_url, {"embeds": [digest_header]}, thread_id=thread_id)
 
     for category, items in articles.items():
         color = CATEGORY_COLORS.get(category, DEFAULT_COLOR)
