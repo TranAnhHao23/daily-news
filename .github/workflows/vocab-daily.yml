@@ -6,11 +6,16 @@ on:
     - cron: "0 2 * * *"
   workflow_dispatch: {}
 
+permissions:
+  contents: write  # script commits the generated page to docs/ and pushes it
+
 jobs:
   vocab:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:

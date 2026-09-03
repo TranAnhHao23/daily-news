@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Fetch news from RSS feeds and post them as Discord embed "cards".
+"""Fetch news from RSS feeds, publish them as a GitHub Pages HTML page,
+and post a single short Discord message linking to it.
 
 No AI/summarization involved — headlines, links, and thumbnails come
 straight from each RSS feed, so there is nothing to truncate or hallucinate.
@@ -18,6 +19,8 @@ from zoneinfo import ZoneInfo
 import feedparser
 import requests
 from dateutil import parser as dateutil_parser
+
+from pages_publish import publish_page, render_page
 
 TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
@@ -45,20 +48,19 @@ FEEDS = {
 }
 
 CATEGORY_COLORS = {
-    "Tin tức Việt Nam": 0xDA251D,
-    "Tin thế giới": 0x2E86DE,
-    "Công nghệ & AI": 0x8E44AD,
+    "Tin tức Việt Nam": "#DA251D",
+    "Tin thế giới": "#2E86DE",
+    "Công nghệ & AI": "#8E44AD",
 }
 CATEGORY_EMOJI = {
     "Tin tức Việt Nam": "🇻🇳",
     "Tin thế giới": "🌍",
     "Công nghệ & AI": "💻",
 }
-DEFAULT_COLOR = 0x95A5A6
+DEFAULT_COLOR = "#95A5A6"
 
 MAX_ARTICLES_PER_SOURCE = 10  # raw candidate pool per source, before card selection
-MAX_CARDS_PER_CATEGORY = 10  # how many cards to actually post per category
-DISCORD_EMBEDS_PER_MESSAGE = 10  # Discord API hard limit
+MAX_CARDS_PER_CATEGORY = 15  # how many cards to show per category on the page
 
 
 def get_window():
@@ -192,27 +194,42 @@ def favicon_url(link):
     return f"https://www.google.com/s2/favicons?domain={domain}&sz=64"
 
 
-def build_banner_embed(category, count, color):
-    return {
-        "title": f"{CATEGORY_EMOJI.get(category, '')} {category}".strip(),
-        "description": f"{count} tin đáng chú ý" if count else "Không có tin nào trong khung giờ này.",
-        "color": color,
-    }
+def render_article_card(article, color):
+    thumb = f'<img class="thumb" src="{html.escape(article["image"])}" alt="">' if article["image"] else ""
+    desc = f'<div class="desc">{html.escape(article["description"])}</div>' if article["description"] else ""
+    time_str = article["published"].strftime("%H:%M %d/%m")
+    return f"""<div class="card" style="border-left:4px solid {color}">
+{thumb}
+<a class="title-link" href="{html.escape(article['link'])}" target="_blank" rel="noopener">{html.escape(article['title'])}</a>
+<div class="meta">
+  <img class="favicon" src="{html.escape(favicon_url(article['link']))}" alt="">
+  <span>{html.escape(article['source'])} • {time_str}</span>
+</div>
+{desc}
+</div>"""
 
 
-def build_embed(article, color):
-    embed = {
-        "title": article["title"][:256],
-        "url": article["link"],
-        "color": color,
-        "author": {"name": article["source"], "icon_url": favicon_url(article["link"])},
-        "timestamp": article["published"].isoformat(),
-    }
-    if article["description"]:
-        embed["description"] = article["description"]
-    if article["image"]:
-        embed["thumbnail"] = {"url": article["image"]}
-    return embed
+def render_news_page(articles_by_category, window_start, window_end):
+    sections = []
+    for category, items in articles_by_category.items():
+        color = CATEGORY_COLORS.get(category, DEFAULT_COLOR)
+        emoji = CATEGORY_EMOJI.get(category, "")
+        sections.append(f'<div class="section-title">{emoji} {html.escape(category)}</div>')
+        if not items:
+            sections.append('<p style="color:#888">Không có tin nào trong khung giờ này.</p>')
+        else:
+            sections.extend(render_article_card(a, color) for a in items)
+
+    header = f"""<div class="page-header">
+<h1>🗞️ Bản tin sáng {window_end.strftime('%d/%m/%Y')}</h1>
+<p>Tổng hợp tin từ {window_start.strftime('%H:%M %d/%m')} đến {window_end.strftime('%H:%M %d/%m')}</p>
+</div>"""
+
+    body = header + "\n".join(sections)
+    title = f"Bản tin sáng {window_end.strftime('%d/%m/%Y')}"
+    total = sum(len(v) for v in articles_by_category.values())
+    description = f"{total} tin nổi bật: Việt Nam, Thế giới, Công nghệ & AI"
+    return render_page(title, description, body)
 
 
 def post_message(webhook_url, payload, thread_id=None):
@@ -223,31 +240,22 @@ def post_message(webhook_url, payload, thread_id=None):
     time.sleep(0.5)  # stay well under Discord's webhook rate limit
 
 
-def post_category(webhook_url, category, items, color, thread_id=None):
-    banner = build_banner_embed(category, len(items), color)
-
-    if not items:
-        post_message(webhook_url, {"embeds": [banner]}, thread_id=thread_id)
-        return
-
-    article_embeds = [build_embed(a, color) for a in items]
-
-    # Banner shares the first message with as many article cards as fit.
-    first_batch = [banner] + article_embeds[: DISCORD_EMBEDS_PER_MESSAGE - 1]
-    post_message(webhook_url, {"embeds": first_batch}, thread_id=thread_id)
-
-    remaining = article_embeds[DISCORD_EMBEDS_PER_MESSAGE - 1 :]
-    for i in range(0, len(remaining), DISCORD_EMBEDS_PER_MESSAGE):
-        batch = remaining[i : i + DISCORD_EMBEDS_PER_MESSAGE]
-        post_message(webhook_url, {"embeds": batch}, thread_id=thread_id)
-
-
 def main():
     window_start, window_end = get_window()
     articles = fetch_articles(window_start, window_end)
+    selected = {cat: select_cards(items, MAX_CARDS_PER_CATEGORY) for cat, items in articles.items()}
 
-    total = sum(len(v) for v in articles.values())
+    total = sum(len(v) for v in selected.values())
     print(f"Fetched {total} articles between {window_start} and {window_end}")
+
+    page_html = render_news_page(selected, window_start, window_end)
+    date_str = window_end.strftime("%Y-%m-%d")
+    url = publish_page(
+        f"news/{date_str}.html",
+        page_html,
+        commit_message=f"News digest {date_str}",
+    )
+    time.sleep(15)  # give GitHub Pages a moment to deploy before Discord unfurls the link
 
     webhook_url = os.environ["DISCORD_WEBHOOK_URL"]
     # Optional: post into a specific existing thread instead of the channel
@@ -255,22 +263,10 @@ def main():
     # Thread ID, Developer Mode must be enabled) and set it as this env var.
     thread_id = os.environ.get("DISCORD_THREAD_ID") or None
 
-    digest_header = {
-        "title": f"🗞️ Bản tin sáng {window_end.strftime('%d/%m/%Y')}",
-        "description": (
-            f"Tổng hợp tin từ {window_start.strftime('%H:%M %d/%m')} "
-            f"đến {window_end.strftime('%H:%M %d/%m')}"
-        ),
-        "color": 0x2C3E50,
-    }
-    post_message(webhook_url, {"embeds": [digest_header]}, thread_id=thread_id)
+    content = f"🗞️ **Bản tin sáng {window_end.strftime('%d/%m/%Y')}**\n{url}"
+    post_message(webhook_url, {"content": content}, thread_id=thread_id)
 
-    for category, items in articles.items():
-        color = CATEGORY_COLORS.get(category, DEFAULT_COLOR)
-        selected = select_cards(items, MAX_CARDS_PER_CATEGORY)
-        post_category(webhook_url, category, selected, color, thread_id=thread_id)
-
-    print("Posted digest to Discord.")
+    print(f"Posted digest link to Discord: {url}")
 
 
 if __name__ == "__main__":

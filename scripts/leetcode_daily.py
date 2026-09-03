@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
-"""Pick 5 LeetCode problems (2 Easy / 2 Medium / 1 Hard) and post them to
-Discord as cards, once a day.
+"""Pick 5 LeetCode problems (2 Easy / 2 Medium / 1 Hard), publish them as a
+GitHub Pages HTML page, and post a single short Discord message linking to it.
 
 Uses LeetCode's public GraphQL endpoint (no login/API key needed). Picks are
 seeded by today's date, so re-running the script the same day gives the same
 5 problems, while each new day gives a different set.
 """
+import html
 import os
 import random
 import time
 from datetime import datetime
-from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import requests
+
+from pages_publish import publish_page, render_page
 
 TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
@@ -47,7 +49,7 @@ query problemsetQuestionListV2($filters: QuestionFilterInput, $limit: Int, $skip
 # (difficulty, how many to pick today)
 DIFFICULTY_PLAN = [("EASY", 2), ("MEDIUM", 2), ("HARD", 1)]
 
-DIFFICULTY_COLORS = {"EASY": 0x2ECC71, "MEDIUM": 0xF39C12, "HARD": 0xE74C3C}
+DIFFICULTY_COLORS = {"EASY": "#2ECC71", "MEDIUM": "#F39C12", "HARD": "#E74C3C"}
 DIFFICULTY_LABEL_VI = {"EASY": "Dễ", "MEDIUM": "Trung bình", "HARD": "Khó"}
 
 # Fetch this many candidates per difficulty (before filtering out paid-only
@@ -112,26 +114,36 @@ def favicon_url(domain):
     return f"https://www.google.com/s2/favicons?domain={domain}&sz=64"
 
 
-def build_problem_embed(problem):
+def render_problem_card(problem):
     difficulty = problem["difficulty"]
+    color = DIFFICULTY_COLORS.get(difficulty, "#95A5A6")
     tags = ", ".join(t["name"] for t in problem["topicTags"][:4])
-    ac_rate = problem["acRate"]
+    ac_rate = problem["acRate"] * 100
+    url = f"https://leetcode.com/problems/{problem['titleSlug']}/"
+    title = f"{problem['questionFrontendId']}. {problem['title']}"
+    label = DIFFICULTY_LABEL_VI.get(difficulty, difficulty)
 
-    lines = []
-    if tags:
-        lines.append(f"🏷️ {tags}")
-    lines.append(f"📈 Tỉ lệ AC: {ac_rate * 100:.1f}%")
+    return f"""<div class="card" style="border-left:4px solid {color}">
+<span class="badge" style="background:{color}">{html.escape(label)}</span>
+<a class="title-link" href="{html.escape(url)}" target="_blank" rel="noopener">{html.escape(title)}</a>
+<div class="meta">
+  <img class="favicon" src="{html.escape(favicon_url('leetcode.com'))}" alt="">
+  <span>🏷️ {html.escape(tags)} · 📈 AC {ac_rate:.1f}%</span>
+</div>
+</div>"""
 
-    return {
-        "title": f"{problem['questionFrontendId']}. {problem['title']}",
-        "url": f"https://leetcode.com/problems/{problem['titleSlug']}/",
-        "color": DIFFICULTY_COLORS.get(difficulty, 0x95A5A6),
-        "author": {
-            "name": f"LeetCode • {DIFFICULTY_LABEL_VI.get(difficulty, difficulty)}",
-            "icon_url": favicon_url("leetcode.com"),
-        },
-        "description": "\n".join(lines),
-    }
+
+def render_leetcode_page(problems, today):
+    plan_text = " + ".join(f"{count} {DIFFICULTY_LABEL_VI[d]}" for d, count in DIFFICULTY_PLAN)
+    header = f"""<div class="page-header">
+<h1>🧩 5 bài LeetCode hôm nay — {today}</h1>
+<p>{html.escape(plan_text)}</p>
+</div>"""
+    cards = "\n".join(render_problem_card(p) for p in problems)
+    body = header + cards
+
+    title = f"5 bài LeetCode — {today}"
+    return render_page(title, plan_text, body)
 
 
 def post_message(webhook_url, payload, thread_id=None):
@@ -149,17 +161,21 @@ def main():
     problems = pick_daily_problems()
     print(f"Picked {len(problems)} problems: {[p['title'] for p in problems]}")
 
-    today = datetime.now(TZ).strftime("%d/%m/%Y")
-    plan_text = " + ".join(f"{count} {DIFFICULTY_LABEL_VI[d]}" for d, count in DIFFICULTY_PLAN)
-    banner = {
-        "title": f"🧩 5 bài LeetCode hôm nay — {today}",
-        "description": plan_text,
-        "color": 0x2C3E50,
-    }
+    now = datetime.now(TZ)
+    today = now.strftime("%d/%m/%Y")
+    date_str = now.strftime("%Y-%m-%d")
 
-    embeds = [banner] + [build_problem_embed(p) for p in problems]
-    post_message(webhook_url, {"embeds": embeds}, thread_id=thread_id)
-    print("Posted LeetCode picks to Discord.")
+    page_html = render_leetcode_page(problems, today)
+    url = publish_page(
+        f"leetcode/{date_str}.html",
+        page_html,
+        commit_message=f"LeetCode picks {date_str}",
+    )
+    time.sleep(15)  # give GitHub Pages a moment to deploy before Discord unfurls the link
+
+    content = f"🧩 **5 bài LeetCode hôm nay — {today}**\n{url}"
+    post_message(webhook_url, {"content": content}, thread_id=thread_id)
+    print(f"Posted LeetCode link to Discord: {url}")
 
 
 if __name__ == "__main__":

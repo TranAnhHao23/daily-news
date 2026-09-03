@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Generate today's English vocabulary list (topic + level configurable
-below) with Google Gemini, and post it to Discord as cards.
+below) with Google Gemini, publish it as a GitHub Pages HTML page, and post
+a single short Discord message linking to it.
 
 Topics rotate: one topic from VOCAB_TOPICS is picked per day (by day of
 year), so re-running the script the same day gives the same topic.
 """
+import html
 import json
 import os
 import re
@@ -13,6 +15,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import requests
+
+from pages_publish import publish_page, render_page
 
 TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
@@ -180,16 +184,28 @@ def generate_vocab_list(api_key, topic):
     raise RuntimeError(f"All Gemini flash models failed. Last error: {last_error}")
 
 
-def build_word_embed(item, color):
-    description = (
-        f"**{item['part_of_speech']}** {item['pronunciation']} — {item['meaning_vi']}\n\n"
-        f"*{item['example_en']}*\n{item['example_vi']}"
-    )
-    return {
-        "title": item["word"],
-        "color": color,
-        "description": description,
-    }
+VOCAB_COLOR = "#16A085"
+
+
+def render_word_card(item):
+    return f"""<div class="card" style="border-left:4px solid {VOCAB_COLOR}">
+<span class="title-link" style="cursor:default">{html.escape(item['word'])}</span>
+<div class="meta"><span>{html.escape(item['part_of_speech'])} {html.escape(item['pronunciation'])} — {html.escape(item['meaning_vi'])}</span></div>
+<div class="desc"><em>{html.escape(item['example_en'])}</em><br>{html.escape(item['example_vi'])}</div>
+</div>"""
+
+
+def render_vocab_page(words, topic, today):
+    header = f"""<div class="page-header">
+<h1>📚 Từ vựng hôm nay — {today}</h1>
+<p>Chủ đề: <strong>{html.escape(topic)}</strong> · Mức độ: {html.escape(VOCAB_LEVEL)}</p>
+</div>"""
+    cards = "\n".join(render_word_card(w) for w in words)
+    body = header + cards
+
+    title = f"Từ vựng — {topic} — {today}"
+    description = f"{len(words)} từ, mức độ {VOCAB_LEVEL}"
+    return render_page(title, description, body)
 
 
 def post_message(webhook_url, payload, thread_id=None):
@@ -209,20 +225,21 @@ def main():
     words = generate_vocab_list(api_key, topic)
     print(f"Generated {len(words)} words for topic '{topic}'")
 
-    today = datetime.now(TZ).strftime("%d/%m/%Y")
-    color = 0x16A085
-    banner = {
-        "title": f"📚 Từ vựng hôm nay — {today}",
-        "description": f"Chủ đề: **{topic}** · Mức độ: {VOCAB_LEVEL}",
-        "color": color,
-    }
+    now = datetime.now(TZ)
+    today = now.strftime("%d/%m/%Y")
+    date_str = now.strftime("%Y-%m-%d")
 
-    embeds = [banner] + [build_word_embed(w, color) for w in words]
-    # Discord allows at most 10 embeds per message.
-    for i in range(0, len(embeds), 10):
-        post_message(webhook_url, {"embeds": embeds[i : i + 10]}, thread_id=thread_id)
+    page_html = render_vocab_page(words, topic, today)
+    url = publish_page(
+        f"vocab/{date_str}.html",
+        page_html,
+        commit_message=f"Vocab list {date_str}",
+    )
+    time.sleep(15)  # give GitHub Pages a moment to deploy before Discord unfurls the link
 
-    print("Posted vocab list to Discord.")
+    content = f"📚 **Từ vựng hôm nay — {today}** ({topic})\n{url}"
+    post_message(webhook_url, {"content": content}, thread_id=thread_id)
+    print(f"Posted vocab link to Discord: {url}")
 
 
 if __name__ == "__main__":
