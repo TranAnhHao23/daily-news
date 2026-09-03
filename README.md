@@ -1,7 +1,10 @@
 # Daily Discord Digests
 
 3 script tự động chạy mỗi ngày **9:00 sáng (giờ Việt Nam)** bằng **GitHub
-Actions** (không cần server riêng), gửi kết quả vào Discord dưới dạng card:
+Actions** (không cần server riêng). Mỗi script dựng nội dung thành 1 trang
+web (HTML) đẹp, publish lên **GitHub Pages**, rồi gửi vào Discord **1 tin
+nhắn ngắn gọn kèm link** — Discord tự hiển thị preview (tiêu đề + ảnh) từ
+trang đó, bấm vào mở thẳng Safari xem đầy đủ.
 
 | Script | Nội dung | Cần API key ngoài Discord? |
 |---|---|---|
@@ -13,13 +16,22 @@ Mỗi script có workflow GitHub Actions riêng, chạy độc lập, gửi vào
 Discord riêng (bạn có thể trỏ cả 3 vào cùng 1 kênh/channel nếu muốn, chỉ cần
 dùng chung 1 webhook URL cho các secret tương ứng).
 
+## ⚠️ Bước bắt buộc: Bật GitHub Pages (chỉ làm 1 lần)
+
+Vào repo trên GitHub → **Settings → Pages** → mục **Build and deployment →
+Source**, chọn **Deploy from a branch** → Branch chọn **main** và thư mục
+**/docs** → **Save**.
+
+Sau vài phút, trang sẽ live tại `https://<username>.github.io/<repo-name>/`.
+Không bật bước này thì link gửi vào Discord sẽ báo lỗi 404.
+
 ## 1. Bản tin tin tức — `daily-digest.yml`
 
 Lấy tin từ RSS (VnExpress, Tuổi Trẻ, Dân Trí, CafeBiz, BBC World,
 TechCrunch...) trong khoảng **00:00 hôm qua → 9:00 sáng hôm nay**, chọn tối đa
-10 tin/chủ đề (chia đều theo từng nguồn), đăng thành card (ảnh + tiêu đề +
-mô tả ngắn + nguồn) vào Discord. Không dùng AI — tiêu đề/mô tả lấy thẳng từ
-RSS.
+15 tin/chủ đề (chia đều theo từng nguồn), dựng thành trang HTML (ảnh + tiêu
+đề + mô tả ngắn + nguồn) và gửi link vào Discord. Không dùng AI — tiêu
+đề/mô tả lấy thẳng từ RSS.
 
 Nguồn tin mặc định (chỉnh trong `scripts/fetch_and_summarize.py`, biến `FEEDS`):
 
@@ -38,8 +50,8 @@ Nguồn tin mặc định (chỉnh trong `scripts/fetch_and_summarize.py`, biế
 
 Chọn ngẫu nhiên (theo ngày, có seed nên chạy lại trong ngày ra kết quả giống
 nhau) 5 bài từ LeetCode: 2 Dễ + 2 Trung bình + 1 Khó, tự động bỏ qua bài
-Premium-only. Mỗi bài là 1 card: tên bài (bấm vào mở LeetCode), độ khó, tag
-chủ đề, tỉ lệ AC.
+Premium-only. Dựng thành trang HTML: tên bài (bấm vào mở LeetCode), độ khó,
+tag chủ đề, tỉ lệ AC — rồi gửi link vào Discord.
 
 **Secrets cần thêm:**
 
@@ -54,7 +66,8 @@ chủ đề, tỉ lệ AC.
 
 Dùng Google Gemini (miễn phí) để tạo danh sách từ vựng tiếng Anh theo chủ đề
 + mức độ bạn chọn, mỗi từ gồm: phiên âm, từ loại, nghĩa tiếng Việt, câu ví dụ
-Anh–Việt. Chủ đề xoay vòng mỗi ngày nếu bạn khai nhiều hơn 1 chủ đề.
+Anh–Việt. Chủ đề xoay vòng mỗi ngày nếu bạn khai nhiều hơn 1 chủ đề. Dựng
+thành trang HTML rồi gửi link vào Discord.
 
 Cấu hình trong `scripts/vocab_daily.py`:
 
@@ -119,8 +132,13 @@ Nam, chạy mỗi ngày mà không cần làm gì thêm.
 
 ## Chạy thử ở máy local (tùy chọn)
 
+Chạy local sẽ **thật sự commit + push** trang HTML vào repo (giống hệt khi
+Actions chạy), nên cần khai báo `GITHUB_REPOSITORY` (bình thường biến này tự
+có sẵn khi chạy trong GitHub Actions):
+
 ```bash
 pip install -r requirements.txt
+export GITHUB_REPOSITORY="<your-username>/<repo-name>"
 
 # Bản tin tin tức
 export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
